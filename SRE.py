@@ -1,294 +1,424 @@
 import streamlit as st
+import sqlite3
+import datetime
+import time
 import requests
-import xml.etree.ElementTree as ET
-import streamlit.components.v1 as components
-import json
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from datetime import datetime
+import re
+import calendar
 
 # ==========================================
-# 1. 페이지 및 기본 설정
+# [초기 설정] 페이지 세팅 (2026년형 모던 스타일)
 # ==========================================
-st.set_page_config(page_title="POSCO Future M - 프롭테크 플랫폼", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="부동산 맛동산", page_icon="🥜", layout="centered")
 
-# 커스텀 CSS로 호갱노노/네이버부동산 느낌의 고급스러운 UI 적용
-st.markdown("""
-    <style>
-    .main-title { font-size: 2.5rem; font-weight: 900; color: #0052A4; margin-bottom: 0px; }
-    .sub-title { font-size: 1.2rem; color: #555; margin-bottom: 30px; }
-    .metric-box { background-color: #f8f9fa; padding: 20px; border-radius: 10px; box-shadow: 2px 2px 10px rgba(0,0,0,0.05); }
-    </style>
-""", unsafe_allow_html=True)
-
+# ==========================================
+# [Groq API 키 설정]
+# ==========================================
 try:
-    KAKAO_REST_KEY = st.secrets["KAKAO_API_KEY"]
-    KAKAO_JS_KEY = st.secrets["KAKAO_JS_KEY"]
-    DATA_GO_KR_KEY = st.secrets["DATA_GO_KR_API_KEY"]
-except KeyError:
-    st.error("🚨 API 키가 설정되지 않았습니다. Streamlit Secrets를 확인해주세요.")
+    GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
+except:
+    st.error("⚠️ 스트림릿 설정(Settings) -> Secrets에 'GROQ_API_KEY'를 먼저 입력해주세요!")
     st.stop()
 
 # ==========================================
-# 2. 사이드바 네비게이션 및 필터링
+# [데이터베이스 설정] SQLite3
 # ==========================================
-with st.sidebar:
-    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/8/8d/POSCO_Future_M_logo.svg/512px-POSCO_Future_M_logo.svg.png", width=150)
-    st.markdown("### 🧭 메뉴 탐색")
-    menu = st.radio("분석 모드 선택", ["📊 종합 대시보드", "🗺️ 다중 레이어 입지 지도", "🕸️ 인프라 헥사곤 분석", "💰 부동산 금융 계산기"])
-    
-    st.markdown("---")
-    st.markdown("### 🔍 기본 검색 조건")
-    lawd_cd = st.selectbox("관심 지역", {"11680":"서울 강남구", "11710":"서울 송파구", "41135":"경기 성남 분당구", "26350":"부산 해운대구", "11110":"서울 종로구"}, format_func=lambda x: {"11680":"서울 강남구", "11710":"서울 송파구", "41135":"경기 성남 분당구", "26350":"부산 해운대구", "11110":"서울 종로구"}[x])
-    deal_ym = st.text_input("조회 연월 (YYYYMM)", value=datetime.now().strftime("%Y%m"))
-    
-    st.markdown("---")
-    st.info("💡 **Tip:** 30년 차 전문가의 노하우가 담긴 데이터입니다. 각 탭을 클릭하여 심층 분석을 진행하세요.")
+conn = sqlite3.connect('real_estate_matdongsan.db', check_same_thread=False)
+c = conn.cursor()
+c.execute('''CREATE TABLE IF NOT EXISTS users (user_id TEXT PRIMARY KEY, password TEXT)''')
+c.execute('''CREATE TABLE IF NOT EXISTS chat_records (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, date TEXT, query TEXT, answer TEXT)''')
+c.execute('''CREATE TABLE IF NOT EXISTS ddays (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, title TEXT, target_date TEXT, category TEXT)''')
+c.execute('''CREATE TABLE IF NOT EXISTS field_diaries (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, date TEXT, content TEXT)''')
+conn.commit()
 
 # ==========================================
-# 공통 함수 모음
+# [CSS] 2026년형 초현대적 UI & 프리텐다드 폰트 & 맛동산 테마
 # ==========================================
-@st.cache_data(ttl=3600)
-def get_apt_trade_data(lawd_cd, deal_ym):
-    url = "http://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev"
-    params = {"serviceKey": DATA_GO_KR_KEY, "pageNo": "1", "numOfRows": "50", "LAWD_CD": lawd_cd, "DEAL_YMD": deal_ym}
-    try:
-        res = requests.get(url, params=params)
-        root = ET.fromstring(res.content)
-        data = []
-        for item in root.findall('.//item'):
-            data.append({
-                "apt_name": item.findtext('aptNm'),
-                "price": int(item.findtext('dealAmount').replace(',', '').strip()),
-                "area": float(item.findtext('excluUseAr')),
-                "floor": item.findtext('floor'),
-                "dong": item.findtext('umdNm'),
-                "jibun": item.findtext('jibun'),
-                "build_year": item.findtext('buildYear')
-            })
-        return pd.DataFrame(data)
-    except:
-        return pd.DataFrame()
+st.markdown("""
+<style>
+    /* 2026년형 모던 폰트: Pretendard 적용 */
+    @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
 
-def get_lat_lng(address):
-    url = "https://dapi.kakao.com/v2/local/search/address.json"
-    headers = {"Authorization": f"KakaoAK {KAKAO_REST_KEY}"}
-    try:
-        res = requests.get(url, headers=headers, params={"query": address}).json()
-        if res['documents']:
-            return float(res['documents'][0]['y']), float(res['documents'][0]['x'])
-    except:
-        pass
-    return None, None
-
-def search_category(category_group_code, lat, lng, radius=1500):
-    url = "https://dapi.kakao.com/v2/local/search/category.json"
-    headers = {"Authorization": f"KakaoAK {KAKAO_REST_KEY}"}
-    params = {"category_group_code": category_group_code, "y": lat, "x": lng, "radius": radius, "size": 15}
-    try:
-        return requests.get(url, headers=headers, params=params).json().get('documents', [])
-    except:
-        return []
-
-# ==========================================
-# 화면 1: 📊 종합 대시보드 (KB부동산 스타일)
-# ==========================================
-if menu == "📊 종합 대시보드":
-    st.markdown('<p class="main-title">📊 지역 부동산 시장 동향</p>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-title">선택하신 지역의 실거래가 요약 및 시장 지표를 한눈에 파악하세요.</p>', unsafe_allow_html=True)
+    .stApp, p, span, div, h1, h2, h3, h4, h5, h6, label, input, textarea, button, table, th, td {
+        font-family: 'Pretendard', sans-serif !important;
+    }
     
-    df = get_apt_trade_data(lawd_cd, deal_ym)
+    /* 배경: 다크 슬레이트 + 맛동산(피넛/골드) 포인트 */
+    .stApp { 
+        background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); 
+        color: #f8fafc; 
+    }
     
-    if not df.empty:
-        df['pyung'] = df['area'] / 3.3
-        df['price_per_pyung'] = df['price'] / df['pyung']
-        
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("총 거래 건수", f"{len(df)}건", "활발함" if len(df)>20 else "관망세")
-        col2.metric("최고 거래가", f"{df['price'].max():,}만원", f"{df.loc[df['price'].idxmax(), 'apt_name']}")
-        col3.metric("평균 거래가", f"{int(df['price'].mean()):,}만원")
-        col4.metric("평균 평당가", f"{int(df['price_per_pyung'].mean()):,}만원")
-        
-        st.markdown("### 📈 면적별 거래가 분포 (호갱노노 스타일)")
-        fig = px.scatter(df, x="area", y="price", size="price", color="build_year", hover_name="apt_name",
-                         labels={"area": "전용면적(㎡)", "price": "거래금액(만원)", "build_year": "건축연도"},
-                         title="면적 대비 거래가 및 노후도 분석", template="plotly_white")
-        st.plotly_chart(fig, use_container_width=True)
-        
-        st.markdown("### 📋 최근 실거래 내역 Top 5")
-        st.dataframe(df[['apt_name', 'dong', 'price', 'area', 'floor', 'build_year']].sort_values('price', ascending=False).head(5), use_container_width=True)
-    else:
-        st.warning("해당 연월에 거래 데이터가 없습니다. 다른 연월을 선택해주세요.")
+    /* 네온 타이틀 (부동산 맛동산 전용) */
+    .neon-title {
+        font-size: 48px; font-weight: 900; color: #ffffff; text-align: center;
+        margin-top: 20px; margin-bottom: 10px; letter-spacing: -1px; line-height: 1.2;
+        text-shadow: 0 0 10px rgba(245, 158, 11, 0.5), 0 0 20px rgba(245, 158, 11, 0.3);
+    }
+    .sub-title { color: #cbd5e1; font-size: 18px; margin-bottom: 40px; font-weight: 400; text-align: center; letter-spacing: -0.5px; }
+
+    /* 입력창 디자인 (글래스모피즘) */
+    div[data-baseweb="input"] > div, div[data-baseweb="textarea"] > div, div[data-baseweb="select"] > div:first-child {
+        background-color: rgba(30, 41, 59, 0.7) !important; 
+        border: 1px solid #d97706 !important; 
+        border-radius: 12px !important;
+        backdrop-filter: blur(10px);
+    }
+    input, textarea { color: #ffffff !important; font-size: 16px !important; font-weight: 500 !important; }
+    input::placeholder, textarea::placeholder { color: #94a3b8 !important; font-weight: 400 !important; }
+    
+    /* 버튼 디자인 (맛동산 골드 그라데이션) */
+    div[data-testid="stButton"] > button, div[data-testid="stFormSubmitButton"] > button {
+        background: linear-gradient(135deg, #f59e0b, #d97706) !important; 
+        color: #ffffff !important; 
+        font-weight: 800 !important; font-size: 16px !important; padding: 12px 24px !important;
+        border: none !important; border-radius: 12px !important;
+        box-shadow: 0 4px 15px rgba(217, 119, 6, 0.4) !important; transition: all 0.2s ease !important;
+    }
+    div[data-testid="stButton"] > button:hover, div[data-testid="stFormSubmitButton"] > button:hover {
+        transform: translateY(-2px) !important; box-shadow: 0 6px 20px rgba(217, 119, 6, 0.6) !important;
+    }
+
+    /* 탭 디자인 */
+    .stTabs [data-baseweb="tab-list"] { gap: 8px; justify-content: center; }
+    .stTabs [data-baseweb="tab"] { 
+        background-color: rgba(255,255,255,0.05); border-radius: 10px 10px 0 0; 
+        padding: 10px 16px; color: #94a3b8; font-size: 16px; font-weight: 600; border: none;
+    }
+    .stTabs [aria-selected="true"] { 
+        background-color: rgba(245, 158, 11, 0.15); color: #fcd34d !important; 
+        border-bottom: 3px solid #f59e0b !important; 
+    }
+
+    /* 채팅 UI */
+    .chat-user { text-align: right; margin-bottom: 15px; }
+    .chat-user span { background-color: #334155; padding: 12px 18px; border-radius: 20px 20px 0 20px; display: inline-block; font-size: 15px; font-weight: 500; box-shadow: 0 4px 10px rgba(0,0,0,0.2); max-width: 85%; }
+    .chat-ai { text-align: left; margin-bottom: 25px; }
+    .chat-ai span { background-color: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); padding: 15px 20px; border-radius: 20px 20px 20px 0; display: inline-block; font-size: 15px; line-height: 1.6; box-shadow: 0 4px 10px rgba(0,0,0,0.2); max-width: 90%; }
+
+    /* 카드 UI */
+    .info-card {
+        background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 16px; padding: 20px; margin-bottom: 15px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.2); backdrop-filter: blur(10px);
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # ==========================================
-# 화면 2: 🗺️ 다중 레이어 입지 지도 (네이버부동산 스타일)
+# [세션 상태 관리]
 # ==========================================
-elif menu == "🗺️ 다중 레이어 입지 지도":
-    st.markdown('<p class="main-title">🗺️ 다중 레이어 입지 지도</p>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-title">아파트 실거래가와 주변 핵심 인프라(지하철, 학교, 병원)를 동시에 확인하세요.</p>', unsafe_allow_html=True)
+if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
+if 'user_id' not in st.session_state: st.session_state['user_id'] = ""
+if 'chat_session' not in st.session_state: st.session_state['chat_session'] = [] 
+
+# ==========================================
+# [화면 구성] 1. 로그인 / 회원가입 화면
+# ==========================================
+if not st.session_state['logged_in']:
+    st.markdown("<div class='neon-title'>🏢 부동산 맛동산 🥜</div>", unsafe_allow_html=True)
+    st.markdown("<div class='sub-title'>달콤하고 바삭한 부동산 정보, 2026년형 AI 프롭테크 솔루션</div>", unsafe_allow_html=True)
     
-    df = get_apt_trade_data(lawd_cd, deal_ym)
-    if not df.empty:
-        with st.spinner("지도 데이터를 렌더링 중입니다..."):
-            map_data = []
-            for _, row in df.iterrows():
-                lat, lng = get_lat_lng(f"{row['dong']} {row['jibun']}")
-                if lat and lng:
-                    map_data.append({"name": row['apt_name'], "price": row['price'], "lat": lat, "lng": lng, "type": "apt"})
+    # 맛동산 & 부동산 테마의 시각적 요소 (CSS 그라데이션 카드)
+    st.markdown("""
+    <div style="display: flex; justify-content: center; gap: 15px; margin-bottom: 40px; flex-wrap: wrap;">
+        <div style="background: linear-gradient(135deg, #f59e0b, #d97706); padding: 20px; border-radius: 16px; width: 140px; text-align: center; box-shadow: 0 10px 20px rgba(217,119,6,0.3);">
+            <div style="font-size: 30px; margin-bottom: 10px;">🍯</div>
+            <div style="color: white; font-weight: bold; font-size: 14px;">꿀 떨어지는<br>청약 정보</div>
+        </div>
+        <div style="background: linear-gradient(135deg, #3b82f6, #2563eb); padding: 20px; border-radius: 16px; width: 140px; text-align: center; box-shadow: 0 10px 20px rgba(37,99,235,0.3);">
+            <div style="font-size: 30px; margin-bottom: 10px;">🏢</div>
+            <div style="color: white; font-weight: bold; font-size: 14px;">스마트한<br>임장 일기</div>
+        </div>
+        <div style="background: linear-gradient(135deg, #10b981, #059669); padding: 20px; border-radius: 16px; width: 140px; text-align: center; box-shadow: 0 10px 20px rgba(16,185,129,0.3);">
+            <div style="font-size: 30px; margin-bottom: 10px;">🥜</div>
+            <div style="color: white; font-weight: bold; font-size: 14px;">바삭하고 명쾌한<br>AI 상담</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    col_empty1, col_login, col_empty2 = st.columns([1, 2, 1])
+    
+    with col_login:
+        auth_tab1, auth_tab2 = st.tabs(["🔑 로그인", "📝 회원가입"])
+        with auth_tab1:
+            login_id = st.text_input("아이디", key="login_id", placeholder="아이디를 입력하세요")
+            login_pw = st.text_input("비밀번호", type="password", key="login_pw", placeholder="비밀번호를 입력하세요")
+            st.write("") 
+            if st.button("로그인", use_container_width=True):
+                c.execute("SELECT * FROM users WHERE user_id=? AND password=?", (login_id, login_pw))
+                if c.fetchone():
+                    st.session_state['logged_in'] = True
+                    st.session_state['user_id'] = login_id
+                    st.session_state['chat_session'] = [] 
+                    st.rerun()
+                else:
+                    st.error("아이디 또는 비밀번호가 일치하지 않습니다.")
+                    
+        with auth_tab2:
+            reg_id = st.text_input("사용할 아이디", key="reg_id")
+            reg_pw = st.text_input("사용할 비밀번호", type="password", key="reg_pw")
+            reg_pw_confirm = st.text_input("비밀번호 확인", type="password", key="reg_pw_confirm")
+            st.write("")
+            if st.button("가입하기", use_container_width=True):
+                if reg_id.strip() == "" or reg_pw == "":
+                    st.error("아이디와 비밀번호를 모두 입력해주세요.")
+                elif reg_pw != reg_pw_confirm:
+                    st.error("비밀번호가 일치하지 않습니다.")
+                else:
+                    try:
+                        c.execute("INSERT INTO users (user_id, password) VALUES (?, ?)", (reg_id, reg_pw))
+                        conn.commit()
+                        st.success("가입 완료! 로그인 탭에서 로그인해주세요.")
+                    except sqlite3.IntegrityError:
+                        st.error("이미 존재하는 아이디입니다.")
+
+# ==========================================
+# [화면 구성] 2. 메인 서비스 화면
+# ==========================================
+else:
+    st.markdown(f"<div class='neon-title' style='font-size: 32px;'>🏢 {st.session_state['user_id']}님의 부동산 맛동산 🥜</div>", unsafe_allow_html=True)
+    
+    col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 1])
+    with col_btn3:
+        if st.button("🔒 로그아웃", use_container_width=True):
+            st.session_state['logged_in'] = False
+            st.session_state['user_id'] = ""
+            st.session_state['chat_session'] = []
+            st.rerun()
             
-            if map_data:
-                center_lat, center_lng = map_data[0]['lat'], map_data[0]['lng']
-                
-                # 주변 인프라 데이터 수집 (지하철 SW8, 학교 SC4, 대형마트 MT1)
-                infra_data = []
-                for code, icon, itype in [("SW8", "🚇", "subway"), ("SC4", "🏫", "school"), ("MT1", "🛒", "mart")]:
-                    places = search_category(code, center_lat, center_lng)
-                    for p in places:
-                        infra_data.append({"name": p['place_name'], "lat": float(p['y']), "lng": float(p['x']), "icon": icon, "type": itype})
-                
-                # 카카오맵 HTML 생성 (커스텀 오버레이 활용)
-                map_html = f"""
-                <!DOCTYPE html>
-                <html><head><meta charset="utf-8">
-                <style>
-                    .apt-label {{ background-color: #0052A4; color: white; padding: 5px 10px; border-radius: 15px; font-weight: bold; font-size: 12px; border: 2px solid white; box-shadow: 0px 2px 4px rgba(0,0,0,0.3); }}
-                    .infra-label {{ background-color: white; color: black; padding: 4px 8px; border-radius: 10px; font-size: 11px; border: 1px solid #ccc; box-shadow: 0px 1px 2px rgba(0,0,0,0.2); }}
-                </style>
-                </head><body>
-                <div id="map" style="width:100%;height:650px;border-radius:10px;"></div>
-                <script type="text/javascript" src="//dapi.kakao.com/v2/maps/sdk.js?appkey={KAKAO_JS_KEY}"></script>
-                <script>
-                    var mapContainer = document.getElementById('map'),
-                        mapOption = {{ center: new kakao.maps.LatLng({center_lat}, {center_lng}), level: 4 }};
-                    var map = new kakao.maps.Map(mapContainer, mapOption);
-                    
-                    var aptData = {json.dumps(map_data)};
-                    var infraData = {json.dumps(infra_data)};
-                    
-                    // 아파트 마커 (파란색 커스텀 라벨)
-                    aptData.forEach(function(d) {{
-                        var content = '<div class="apt-label">' + d.name + '<br>' + (d.price/10000).toFixed(1) + '억</div>';
-                        var position = new kakao.maps.LatLng(d.lat, d.lng);
-                        new kakao.maps.CustomOverlay({{ map: map, position: position, content: content, yAnchor: 1 }});
-                    }});
-                    
-                    // 인프라 마커 (아이콘 라벨)
-                    infraData.forEach(function(d) {{
-                        var content = '<div class="infra-label">' + d.icon + ' ' + d.name + '</div>';
-                        var position = new kakao.maps.LatLng(d.lat, d.lng);
-                        new kakao.maps.CustomOverlay({{ map: map, position: position, content: content, yAnchor: 0 }});
-                    }});
-                </script>
-                </body></html>
-                """
-                components.html(map_html, height=670)
-    else:
-        st.warning("데이터가 없습니다.")
+    st.write("")
 
-# ==========================================
-# 화면 3: 🕸️ 인프라 헥사곤 분석 (데이터 사이언스)
-# ==========================================
-elif menu == "🕸️ 인프라 헥사곤 분석":
-    st.markdown('<p class="main-title">🕸️ 동네 인프라 헥사곤 분석</p>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-title">특정 주소를 중심으로 교육, 교통, 편의, 의료, 자연, 문화 점수를 방사형 차트로 분석합니다.</p>', unsafe_allow_html=True)
-    
-    target_address = st.text_input("분석할 중심 주소 또는 아파트명 입력", "강남역")
-    
-    if st.button("헥사곤 분석 실행"):
-        lat, lng = get_lat_lng(target_address)
-        if lat and lng:
-            with st.spinner("반경 1.5km 내의 모든 인프라 데이터를 수집 및 분석 중입니다..."):
-                # 카테고리별 개수 수집
-                edu = len(search_category("SC4", lat, lng)) + len(search_category("AC5", lat, lng)) # 학교+학원
-                trans = len(search_category("SW8", lat, lng)) # 지하철
-                conv = len(search_category("MT1", lat, lng)) + len(search_category("CS2", lat, lng)) # 마트+편의점
-                medi = len(search_category("HP8", lat, lng)) + len(search_category("PM9", lat, lng)) # 병원+약국
-                food = len(search_category("FD6", lat, lng)) + len(search_category("CE7", lat, lng)) # 음식점+카페
-                culture = len(search_category("CT1", lat, lng)) # 문화시설
-                
-                # 점수 정규화 (임의의 만점 기준 설정)
-                categories = ['교육(학군)', '교통(역세권)', '편의(슬세권)', '의료(병세권)', '외식/카페', '문화/여가']
-                scores = [min(edu*10, 100), min(trans*30, 100), min(conv*5, 100), min(medi*5, 100), min(food*3, 100), min(culture*20, 100)]
-                
-                fig = go.Figure(data=go.Scatterpolar(
-                  r=scores + [scores[0]], # 폐곡선을 위해 첫 값 추가
-                  theta=categories + [categories[0]],
-                  fill='toself',
-                  line_color='#0052A4',
-                  fillcolor='rgba(0, 82, 164, 0.4)'
-                ))
-                fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])), showlegend=False, title=f"[{target_address}] 종합 입지 헥사곤")
-                
-                col1, col2 = st.columns([2, 1])
-                with col1:
-                    st.plotly_chart(fig, use_container_width=True)
-                with col2:
-                    st.markdown("### 📊 상세 인프라 수치")
-                    st.write(f"**🏫 교육 시설:** {edu}개")
-                    st.write(f"**🚇 지하철역:** {trans}개")
-                    st.write(f"**🛒 편의/마트:** {conv}개")
-                    st.write(f"**🏥 의료 시설:** {medi}개")
-                    st.write(f"**☕ 맛집/카페:** {food}개")
-                    st.write(f"**🎨 문화 시설:** {culture}개")
-                    
-                    total_score = sum(scores) / 6
-                    st.success(f"🏆 **종합 입지 점수: {total_score:.1f}점 / 100점**")
+    # 탭 구성
+    tab1, tab2, tab3 = st.tabs(["🤖 AI 부동산 상담", "📝 임장 일기 (달력)", "📅 청약/이사 D-Day"])
+
+    # ------------------------------------------
+    # 공통 AI 호출 함수 (외국어 완벽 차단)
+    # ------------------------------------------
+    def get_ai_response(system_prompt, user_input, history=[]):
+        messages = [{"role": "system", "content": system_prompt}]
+        for m in history:
+            messages.append({"role": "user", "content": m['query']})
+            messages.append({"role": "assistant", "content": m['answer']})
+        messages.append({"role": "user", "content": user_input})
+        
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+        data = {"model": "llama-3.3-70b-versatile", "messages": messages, "temperature": 0.3}
+        
+        response = requests.post(url, headers=headers, json=data)
+        if response.status_code == 200:
+            answer = response.json()['choices'][0]['message']['content']
+            # 영어 알파벳, 한자, 일본어 등 외국어 강제 삭제 (환각 방지)
+            foreign_pattern = re.compile(r'[a-zA-Z\u4e00-\u9fff\u3400-\u4dbf\u3040-\u30ff\u31f0-\u31ff\u0900-\u097f\u0400-\u04ff\u0600-\u06ff\u0e00-\u0e7f\u1e00-\u1eff]')
+            answer = foreign_pattern.sub('', answer)
+            return answer.strip()
         else:
-            st.error("주소를 찾을 수 없습니다. 정확한 동/호수나 건물명을 입력해주세요.")
+            return f"오류 발생: {response.status_code}"
 
-# ==========================================
-# 화면 4: 💰 부동산 금융 계산기
-# ==========================================
-elif menu == "💰 부동산 금융 계산기":
-    st.markdown('<p class="main-title">💰 영끌족을 위한 부동산 금융 계산기</p>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-title">취득세부터 주택담보대출 원리금 상환액까지 완벽하게 계산해 드립니다.</p>', unsafe_allow_html=True)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("### 🏦 주택담보대출 계산기 (원리금균등상환)")
-        principal = st.number_input("대출 원금 (만원)", min_value=0, value=30000, step=1000) * 10000
-        annual_rate = st.number_input("연 이자율 (%)", min_value=0.0, value=4.5, step=0.1)
-        years = st.number_input("대출 기간 (년)", min_value=1, value=30, step=1)
+    # ------------------------------------------
+    # [탭 1] AI 부동산 상담
+    # ------------------------------------------
+    with tab1:
+        st.markdown("### 🤖 바삭하고 명쾌한 AI 부동산 상담")
+        st.markdown("청약, 대출, 세금, 부동산 용어 등 궁금한 점을 무엇이든 물어보세요. 맛동산처럼 달콤하고 쉽게 풀어드립니다.")
         
-        if st.button("대출 이자 계산하기"):
-            r = (annual_rate / 100) / 12
-            n = years * 12
-            if r > 0:
-                pmt = principal * (r * (1 + r)**n) / ((1 + r)**n - 1)
-            else:
-                pmt = principal / n
+        if st.button("🔄 대화 초기화", use_container_width=True):
+            st.session_state['chat_session'] = []
+            st.rerun()
+        st.write("")
+
+        if not st.session_state['chat_session']:
+            st.markdown("<div class='chat-ai'><span>🥜 <b>부동산 맛동산 AI:</b><br><br>안녕하세요! 부동산에 대해 어떤 점이 궁금하신가요? 어려운 용어도 아주 쉽게 설명해 드릴게요!</span></div>", unsafe_allow_html=True)
+        else:
+            for msg in st.session_state['chat_session']:
+                st.markdown(f"<div class='chat-user'><span>{msg['query']}</span></div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='chat-ai'><span>{msg['answer']}</span></div>", unsafe_allow_html=True)
+
+        with st.form("chat_form", clear_on_submit=True):
+            user_query = st.text_area("질문을 입력하세요.", height=100, placeholder="예: 디딤돌 대출 조건이 어떻게 되나요? / LTV가 무슨 뜻인가요?")
+            submitted = st.form_submit_button("질문하기", use_container_width=True)
+            
+            if submitted and user_query.strip():
+                with st.spinner("AI가 명쾌한 답변을 준비하고 있습니다..."):
+                    sys_prompt = "당신은 2026년 최고의 프롭테크 AI '부동산 맛동산'입니다. **[절대 규칙]: 오직 '한국어(한글)'와 '숫자'만 사용하세요. 영어 알파벳(a-z, A-Z), 한자(漢字) 등 외국어는 단 한 글자도 절대 금지합니다. (엘티브이, 디에스알 처럼 무조건 한글 발음으로 적으세요.)** 사용자의 부동산 관련 질문(청약, 대출, 세금, 용어 등)에 대해 아주 쉽고 친절하게, 가독성 좋은 마크다운으로 답변해주세요."
+                    answer = get_ai_response(sys_prompt, user_query, st.session_state['chat_session'])
+                    
+                    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    c.execute("INSERT INTO chat_records (user_id, date, query, answer) VALUES (?, ?, ?, ?)", 
+                              (st.session_state['user_id'], now, user_query, answer))
+                    conn.commit()
+                    
+                    st.session_state['chat_session'].append({'query': user_query, 'answer': answer})
+                    st.rerun()
+
+    # ------------------------------------------
+    # [탭 2] 📝 임장 일기 (달력)
+    # ------------------------------------------
+    with tab2:
+        st.markdown("### 📝 스마트 임장 일기")
+        st.markdown("직접 발로 뛴 임장(현장 방문) 기록을 달력에 체계적으로 남겨보세요.")
+        
+        col_y, col_m = st.columns(2)
+        today_date = datetime.date.today()
+        with col_y:
+            sel_year = st.selectbox("년도", range(2024, 2031), index=today_date.year - 2024)
+        with col_m:
+            sel_month = st.selectbox("월", range(1, 13), index=today_date.month - 1)
+            
+        # 해당 월의 임장 일기 데이터 가져오기
+        c.execute("SELECT date, content FROM field_diaries WHERE user_id=? AND date LIKE ?", (st.session_state['user_id'], f"{sel_year}-{sel_month:02d}-%"))
+        diary_data = {row[0]: row[1] for row in c.fetchall()}
+        
+        # HTML/CSS 달력 렌더링
+        cal = calendar.monthcalendar(sel_year, sel_month)
+        
+        cal_html = f"""
+        <div style="background: rgba(30, 41, 59, 0.8); border-radius: 16px; padding: 20px; border: 1px solid rgba(245, 158, 11, 0.3); margin-bottom: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.3);">
+            <h4 style="text-align: center; color: #fcd34d; margin-bottom: 20px; font-weight: 800;">{sel_year}년 {sel_month}월</h4>
+            <table style="width: 100%; text-align: center; border-collapse: collapse; table-layout: fixed;">
+                <tr style="color: #94a3b8; font-weight: bold; font-size: 15px;">
+                    <th style="padding-bottom: 15px;">월</th><th>화</th><th>수</th><th>목</th><th>금</th><th style="color:#60a5fa;">토</th><th style="color:#f87171;">일</th>
+                </tr>
+        """
+        
+        for week in cal:
+            cal_html += "<tr>"
+            for i, day in enumerate(week):
+                if day == 0:
+                    cal_html += "<td style='padding: 15px 5px; border-top: 1px solid rgba(255,255,255,0.05);'></td>"
+                else:
+                    date_str = f"{sel_year}-{sel_month:02d}-{day:02d}"
+                    is_today = (date_str == str(today_date))
+                    has_diary = date_str in diary_data
+                    
+                    day_color = "#f8fafc"
+                    if i == 5: day_color = "#93c5fd" # 토요일
+                    elif i == 6: day_color = "#fca5a5" # 일요일
+                    
+                    bg_style = "background: rgba(245, 158, 11, 0.2); border-radius: 10px;" if is_today else ""
+                    icon = "<div style='font-size: 14px; margin-top: 5px;'>🏢</div>" if has_diary else "<div style='font-size: 14px; margin-top: 5px; opacity: 0;'>-</div>"
+                    
+                    cal_html += f"<td style='padding: 10px 5px; border-top: 1px solid rgba(255,255,255,0.05); {bg_style}'>"
+                    cal_html += f"<div style='color: {day_color}; font-size: 16px; font-weight: {'800' if is_today else '500'};'>{day}</div>"
+                    cal_html += f"{icon}</td>"
+            cal_html += "</tr>"
+            
+        cal_html += "</table></div>"
+        st.markdown(cal_html, unsafe_allow_html=True)
+        
+        # 일기 작성 영역
+        st.markdown("#### ✍️ 임장 기록 작성")
+        selected_date = st.date_input("기록할 날짜를 선택하세요", value=today_date)
+        selected_date_str = str(selected_date)
+        
+        current_content = diary_data.get(selected_date_str, "")
+        
+        with st.form("diary_form"):
+            new_content = st.text_area(f"{selected_date_str} 임장 기록", value=current_content, height=150, placeholder="방문한 아파트 이름, 주변 인프라, 느낀 점, 호가 등을 자유롭게 기록하세요.")
+            
+            col_sub1, col_sub2 = st.columns(2)
+            with col_sub1:
+                submitted_diary = st.form_submit_button("💾 기록 저장", use_container_width=True)
+            with col_sub2:
+                deleted_diary = st.form_submit_button("🗑️ 기록 삭제", use_container_width=True)
                 
-            total_payment = pmt * n
-            total_interest = total_payment - principal
-            
-            st.info(f"💸 **매월 상환액:** 약 **{int(pmt/10000):,}만 원**")
-            st.write(f"- 총 상환 금액: {int(total_payment/100000000)}억 {int((total_payment%100000000)/10000):,}만 원")
-            st.write(f"- 총 발생 이자: {int(total_interest/100000000)}억 {int((total_interest%100000000)/10000):,}만 원")
+            if submitted_diary:
+                if new_content.strip():
+                    c.execute("SELECT id FROM field_diaries WHERE user_id=? AND date=?", (st.session_state['user_id'], selected_date_str))
+                    row = c.fetchone()
+                    if row:
+                        c.execute("UPDATE field_diaries SET content=? WHERE id=?", (new_content, row[0]))
+                    else:
+                        c.execute("INSERT INTO field_diaries (user_id, date, content) VALUES (?, ?, ?)", (st.session_state['user_id'], selected_date_str, new_content))
+                    conn.commit()
+                    st.success("임장 기록이 저장되었습니다!")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.warning("내용을 입력해주세요.")
+                    
+            if deleted_diary:
+                c.execute("DELETE FROM field_diaries WHERE user_id=? AND date=?", (st.session_state['user_id'], selected_date_str))
+                conn.commit()
+                st.success("기록이 삭제되었습니다.")
+                time.sleep(1)
+                st.rerun()
 
-    with col2:
-        st.markdown("### 📜 부동산 취득세 계산기")
-        buy_price = st.number_input("매매 가격 (만원)", min_value=0, value=80000, step=1000) * 10000
-        area_type = st.radio("전용 면적", ["85㎡ 이하", "85㎡ 초과"])
-        house_cnt = st.selectbox("보유 주택 수", ["무주택자 (1주택 취득)", "1주택자 (2주택 취득)", "다주택자"])
+    # ------------------------------------------
+    # [탭 3] 📅 청약/이사 D-Day
+    # ------------------------------------------
+    with tab3:
+        st.markdown("### 📅 청약 및 이사 D-Day 관리")
+        st.markdown("놓치기 쉬운 청약일, 계약일, 이사일, 잔금일 등을 한눈에 관리하세요.")
         
-        if st.button("취득세 계산하기"):
-            # 간략화된 취득세율 로직 (실제 법령에 따라 다를 수 있음)
-            tax_rate = 0.01
-            if buy_price > 900000000: tax_rate = 0.03
-            elif buy_price > 600000000: tax_rate = 0.02
+        with st.form("dday_form"):
+            col_d1, col_d2 = st.columns([2, 1])
+            with col_d1:
+                d_title = st.text_input("일정 이름 (예: 래미안 청약일, 전세 잔금일)")
+            with col_d2:
+                d_date = st.date_input("목표 날짜")
+                
+            d_cat = st.selectbox("카테고리", ["청약/분양", "계약/잔금", "이사", "기타 일정"])
             
-            if house_cnt == "1주택자 (2주택 취득)": tax_rate = 0.08
-            elif house_cnt == "다주택자": tax_rate = 0.12
-            
-            edu_tax = tax_rate * 0.1
-            farm_tax = 0.002 if area_type == "85㎡ 초과" else 0.0
-            
-            total_tax_rate = tax_rate + edu_tax + farm_tax
-            total_tax = buy_price * total_tax_rate
-            
-            st.error(f"🏛️ **예상 총 취득세:** 약 **{int(total_tax/10000):,}만 원**")
-            st.write(f"- 적용 취득세율: {tax_rate*100:.1f}%")
-            st.write(f"- 지방교육세: {edu_tax*100:.2f}%")
-            st.write(f"- 농어촌특별세: {farm_tax*100:.1f}%")
+            if st.form_submit_button("일정 추가하기", use_container_width=True):
+                if d_title.strip():
+                    c.execute("INSERT INTO ddays (user_id, title, target_date, category) VALUES (?, ?, ?, ?)", 
+                              (st.session_state['user_id'], d_title, str(d_date), d_cat))
+                    conn.commit()
+                    st.success("일정이 추가되었습니다!")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.warning("일정 이름을 입력해주세요.")
+                    
+        st.markdown("<hr style='border-color: rgba(255,255,255,0.1); margin: 30px 0;'>", unsafe_allow_html=True)
+        
+        c.execute("SELECT id, title, target_date, category FROM ddays WHERE user_id=? ORDER BY target_date ASC", (st.session_state['user_id'],))
+        ddays = c.fetchall()
+        
+        if not ddays:
+            st.info("등록된 일정이 없습니다. 위에서 새로운 일정을 추가해보세요!")
+        else:
+            today = datetime.date.today()
+            for d in ddays:
+                d_id, title, t_date_str, cat = d
+                t_date = datetime.datetime.strptime(t_date_str, "%Y-%m-%d").date()
+                delta = (t_date - today).days
+                
+                if cat == "청약/분양": badge_color = "#f59e0b" # 골드
+                elif cat == "계약/잔금": badge_color = "#ef4444" # 레드
+                elif cat == "이사": badge_color = "#3b82f6" # 블루
+                else: badge_color = "#10b981" # 그린
+                
+                if delta > 0: display_text = f"D-{delta}"
+                elif delta < 0: display_text = f"D+{-delta}"
+                else: display_text = "D-Day (오늘!)"
+
+                col_text, col_btn = st.columns([5, 1])
+                with col_text:
+                    st.markdown(f"""
+                    <div class="info-card" style="border-left: 5px solid {badge_color}; display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <div style="color: #94a3b8; font-size: 13px; margin-bottom: 5px; font-weight: 600;">{cat} • {t_date_str}</div>
+                            <div style="color: #ffffff; font-size: 18px; font-weight: 800;">{title}</div>
+                        </div>
+                        <div style="color: {badge_color}; font-size: 24px; font-weight: 900;">{display_text}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with col_btn:
+                    if st.button("❌", key=f"del_dday_{d_id}", help="삭제"):
+                        c.execute("DELETE FROM ddays WHERE id=?", (d_id,))
+                        conn.commit()
+                        st.rerun()
+
+# ==========================================
+# [푸터]
+# ==========================================
+st.markdown("""
+<hr style="border-color: rgba(255,255,255,0.1); margin-top: 50px;">
+<div style="text-align: center; color: #64748b; font-size: 13px; line-height: 1.6;">
+    🏢 <b>부동산 맛동산</b> | 2026 AI PropTech Solution<br>
+    본 서비스의 AI 답변은 참고용이며, 실제 부동산 계약 및 투자 시에는 반드시 전문가와 상의하시기 바랍니다.
+</div>
+""", unsafe_allow_html=True)
