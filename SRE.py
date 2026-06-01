@@ -10,6 +10,7 @@ import math
 import xml.etree.ElementTree as ET
 import streamlit.components.v1 as components
 import json
+import urllib.parse
 from dateutil.relativedelta import relativedelta
 
 # ==========================================
@@ -18,31 +19,45 @@ from dateutil.relativedelta import relativedelta
 st.set_page_config(page_title="부동산 맛동산", page_icon="🥜", layout="wide")
 
 # ==========================================
-# [API 키 설정]
+# [API 키 설정 및 디코딩]
 # ==========================================
 try:
     GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
     KAKAO_REST_KEY = st.secrets["KAKAO_API_KEY"]
     KAKAO_JS_KEY = st.secrets["KAKAO_JS_KEY"]
-    DATA_GO_KR_KEY = st.secrets["DATA_GO_KR_API_KEY"]
+    # 공공데이터 포털 키는 디코딩을 해줘야 requests에서 이중 인코딩 에러가 나지 않습니다.
+    DATA_GO_KR_KEY = urllib.parse.unquote(st.secrets["DATA_GO_KR_API_KEY"])
 except KeyError:
     st.error("⚠️ 스트림릿 설정(Secrets)에 API 키(GROQ, KAKAO, DATA_GO_KR)가 모두 있는지 확인해주세요!")
     st.stop()
 
 # ==========================================
-# [데이터베이스 설정] SQLite3 (D-Day 테이블 업그레이드)
+# [데이터베이스 설정] SQLite3
 # ==========================================
 conn = sqlite3.connect('real_estate_matdongsan.db', check_same_thread=False)
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS users (user_id TEXT PRIMARY KEY, password TEXT)''')
 c.execute('''CREATE TABLE IF NOT EXISTS chat_records (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, date TEXT, query TEXT, answer TEXT)''')
 c.execute('''CREATE TABLE IF NOT EXISTS field_diaries (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, date TEXT, content TEXT)''')
-# D-Day 테이블에 체크리스트(tasks) 컬럼 추가된 버전
 c.execute('''CREATE TABLE IF NOT EXISTS ddays_v2 (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, title TEXT, target_date TEXT, category TEXT, tasks TEXT)''')
 conn.commit()
 
 # ==========================================
-# [CSS] 서울남산체 & 가독성 극대화 (글자색 완벽 분리)
+# [지역별 기본 중심 좌표 및 법정동 코드]
+# ==========================================
+REGION_INFO = {
+    "경북 포항 남구": {"code": "47111", "lat": 36.0190, "lng": 129.3434},
+    "경북 포항 북구": {"code": "47113", "lat": 36.0425, "lng": 129.3644},
+    "서울 강남구": {"code": "11680", "lat": 37.5172, "lng": 127.0473},
+    "서울 송파구": {"code": "11710", "lat": 37.5145, "lng": 127.1062},
+    "경기 성남 분당구": {"code": "41135", "lat": 37.3827, "lng": 127.1189},
+    "경기 하남시": {"code": "41450", "lat": 37.5392, "lng": 127.2148},
+    "부산 해운대구": {"code": "26350", "lat": 35.1631, "lng": 129.1636},
+    "대구 수성구": {"code": "27260", "lat": 35.8581, "lng": 128.6306}
+}
+
+# ==========================================
+# [CSS] 가독성 극대화 및 글자색 분리
 # ==========================================
 st.markdown("""
 <style>
@@ -52,23 +67,19 @@ st.markdown("""
         font-weight: normal; font-style: normal;
     }
 
-    /* 전체 폰트 및 기본 글자색(흰색) 강제 적용 */
     .stApp, p, span, div, h1, h2, h3, h4, h5, h6, table, th, td {
         font-family: 'SeoulNamsanM', sans-serif !important;
         color: #ffffff !important;
     }
     
-    /* 배경: 다크 슬레이트 */
     .stApp { background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); }
     
-    /* 라벨(아이디, 비밀번호, 입력창 제목 등) 색상을 골드로 변경하여 눈에 확 띄게 함 */
     label, .st-emotion-cache-10trnc, .st-emotion-cache-1y4p8pa {
         color: #fcd34d !important; 
         font-size: 18px !important; 
         font-weight: bold !important;
     }
 
-    /* 입력창 디자인 */
     div[data-baseweb="input"] > div, div[data-baseweb="textarea"] > div, div[data-baseweb="select"] > div:first-child {
         background-color: rgba(0, 0, 0, 0.8) !important; 
         border: 2px solid #d97706 !important; 
@@ -77,14 +88,12 @@ st.markdown("""
     input, textarea { color: #ffffff !important; font-size: 18px !important; font-weight: bold !important; }
     input::placeholder, textarea::placeholder { color: #9ca3af !important; }
     
-    /* 버튼 디자인 */
     div[data-testid="stButton"] > button, div[data-testid="stFormSubmitButton"] > button {
         background: linear-gradient(135deg, #f59e0b, #d97706) !important; 
         color: #ffffff !important; font-weight: bold !important; font-size: 18px !important; 
         border: none !important; border-radius: 10px !important;
     }
 
-    /* 탭 디자인 (선택된 탭과 안 된 탭 색상 명확히 구분) */
     button[data-baseweb="tab"] { 
         background-color: #334155 !important; 
         border: 1px solid #475569 !important;
@@ -99,7 +108,6 @@ st.markdown("""
     }
     button[data-baseweb="tab"][aria-selected="true"] p { color: #000000 !important; font-weight: 900 !important; }
 
-    /* 카드 UI */
     .info-card {
         background: rgba(0,0,0,0.6); border: 1px solid #f59e0b;
         border-radius: 12px; padding: 20px; margin-bottom: 15px;
@@ -115,17 +123,12 @@ if 'user_id' not in st.session_state: st.session_state['user_id'] = ""
 if 'chat_session' not in st.session_state: st.session_state['chat_session'] = [] 
 
 # ==========================================
-# [프롭테크 핵심 함수] 데이터 증발 완벽 해결
+# [핵심 API 연동 함수]
 # ==========================================
-LAWD_CD_DICT = {
-    "서울 강남구": "11680", "서울 송파구": "11710", "경기 성남 분당구": "41135", "경기 하남시": "41450",
-    "부산 해운대구": "26350", "대구 수성구": "27260", "경북 포항 남구": "47111", "경북 포항 북구": "47113"
-}
-
 @st.cache_data(ttl=3600)
 def get_apt_data(lawd_cd, deal_ym):
     url = "http://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev"
-    params = {"serviceKey": DATA_GO_KR_KEY, "pageNo": "1", "numOfRows": "200", "LAWD_CD": lawd_cd, "DEAL_YMD": deal_ym}
+    params = {"serviceKey": DATA_GO_KR_KEY, "pageNo": "1", "numOfRows": "150", "LAWD_CD": lawd_cd, "DEAL_YMD": deal_ym}
     try:
         res = requests.get(url, params=params, timeout=10)
         root = ET.fromstring(res.content)
@@ -138,11 +141,10 @@ def get_apt_data(lawd_cd, deal_ym):
                 "dong": item.findtext('umdNm'), "jibun": item.findtext('jibun')
             })
         return pd.DataFrame(data)
-    except:
+    except Exception as e:
         return pd.DataFrame()
 
 def get_coords(address):
-    """카카오 API 에러 방지 무적 로직 (지역명 포함 검색)"""
     url = "https://dapi.kakao.com/v2/local/search/address.json"
     headers = {"Authorization": f"KakaoAK {KAKAO_REST_KEY}"}
     try:
@@ -150,7 +152,7 @@ def get_coords(address):
         if res.get('documents'):
             return float(res['documents'][0]['y']), float(res['documents'][0]['x'])
         
-        # 주소 검색 실패 시 키워드 검색으로 2차 시도
+        # 키워드 2차 검색
         url_kw = "https://dapi.kakao.com/v2/local/search/keyword.json"
         res_kw = requests.get(url_kw, headers=headers, params={"query": address}).json()
         if res_kw.get('documents'):
@@ -169,8 +171,8 @@ def haversine_distance(lat1, lon1, lat2, lon2):
 # [화면 구성] 1. 로그인 / 회원가입 화면
 # ==========================================
 if not st.session_state['logged_in']:
-    st.markdown("<h1 class='neon-title'>🏢 부동산 맛동산 🥜</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align:center; color:#fcd34d !important; font-size:20px;'>달콤하고 바삭한 부동산 정보, 2026년형 AI 프롭테크 솔루션</p>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align:center; color:#fcd34d !important;'>🏢 부동산 맛동산 🥜</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align:center; color:#ffffff !important; font-size:20px;'>달콤하고 바삭한 부동산 정보, 2026년형 AI 프롭테크 솔루션</p>", unsafe_allow_html=True)
     
     col_empty1, col_login, col_empty2 = st.columns([1, 2, 1])
     with col_login:
@@ -204,7 +206,7 @@ if not st.session_state['logged_in']:
 # [화면 구성] 2. 메인 서비스 화면 (5개 탭)
 # ==========================================
 else:
-    st.markdown(f"<h1 class='neon-title' style='font-size: 36px;'>🏢 {st.session_state['user_id']}님의 부동산 맛동산 🥜</h1>", unsafe_allow_html=True)
+    st.markdown(f"<h1 style='font-size: 36px; color:#fcd34d !important;'>🏢 {st.session_state['user_id']}님의 부동산 맛동산 🥜</h1>", unsafe_allow_html=True)
     
     col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 1])
     with col_btn3:
@@ -245,46 +247,88 @@ else:
                         st.rerun()
 
     # ------------------------------------------
-    # [탭 2] 🗺️ 실거래가 지도 (데이터 증발 해결)
+    # [탭 2] 🗺️ 실거래가 지도 (처음부터 무조건 로딩)
     # ------------------------------------------
     with tab2:
-        st.markdown("### 🗺️ 클릭하면 가격이 나오는 실거래가 지도")
-        col_m1, col_m2 = st.columns(2)
-        with col_m1: map_region = st.selectbox("지역 선택", list(LAWD_CD_DICT.keys()), index=6, key="map_reg")
-        with col_m2: map_ym = st.text_input("계약 연월", value=(datetime.datetime.now() - relativedelta(months=2)).strftime("%Y%m"), key="map_ym")
+        st.markdown("### 🗺️ 실거래가 지도 (지도를 움직이며 가격을 확인하세요)")
         
-        if st.button("지도 불러오기", use_container_width=True):
-            with st.spinner("데이터를 불러오는 중입니다..."):
-                df_map = get_apt_data(LAWD_CD_DICT[map_region], map_ym)
-                if not df_map.empty:
-                    df_map = df_map.drop_duplicates(subset=['apt_name'])
-                    map_data = []
-                    for _, row in df_map.iterrows():
-                        # 핵심 해결책: 카카오 API가 찾을 수 있도록 '지역명 + 동 + 지번'으로 검색
-                        full_address = f"{map_region.split()[-1]} {row['dong']} {row['jibun']}"
-                        lat, lng = get_coords(full_address)
-                        if lat and lng:
-                            map_data.append({"name": row['apt_name'], "price": row['price'], "lat": lat, "lng": lng})
+        col_m1, col_m2 = st.columns(2)
+        with col_m1: 
+            map_region = st.selectbox("지역 선택", list(REGION_INFO.keys()), index=0, key="map_reg")
+        with col_m2: 
+            # 기본값은 2달 전으로 설정하여 실거래 신고 기간 딜레이 극복
+            default_ym = (datetime.datetime.now() - relativedelta(months=2)).strftime("%Y%m")
+            map_ym = st.text_input("계약 연월 (YYYYMM)", value=default_ym, key="map_ym")
+        
+        # 선택된 지역의 기본 중심 좌표 가져오기
+        center_lat = REGION_INFO[map_region]["lat"]
+        center_lng = REGION_INFO[map_region]["lng"]
+        lawd_code = REGION_INFO[map_region]["code"]
+        
+        # [핵심] 버튼 클릭 없이 즉시 데이터 로드 및 지도 렌더링 시작
+        df_map = get_apt_data(lawd_code, map_ym)
+        map_data = []
+        
+        if not df_map.empty:
+            df_map = df_map.drop_duplicates(subset=['apt_name'])
+            for _, row in df_map.iterrows():
+                # 카카오 API가 정확히 찾을 수 있도록 '지역명 + 동 + 지번' 조합
+                full_address = f"{map_region.split()[-1]} {row['dong']} {row['jibun']}"
+                lat, lng = get_coords(full_address)
+                if lat and lng:
+                    map_data.append({
+                        "name": row['apt_name'], 
+                        "price": row['price'], 
+                        "lat": lat, 
+                        "lng": lng,
+                        "pyung": row['pyung']
+                    })
+        
+        # 데이터가 없더라도 지도는 무조건 렌더링함 (빈 지도 방지)
+        map_html = f"""
+        <div id="map" style="width:100%;height:600px;border-radius:12px;border:2px solid #f59e0b;"></div>
+        <script src="//dapi.kakao.com/v2/maps/sdk.js?appkey={KAKAO_JS_KEY}"></script>
+        <script>
+            var mapContainer = document.getElementById('map'),
+                mapOption = {{ 
+                    center: new kakao.maps.LatLng({center_lat}, {center_lng}), 
+                    level: 5 
+                }};
+            
+            var map = new kakao.maps.Map(mapContainer, mapOption);
+            
+            // 지도 컨트롤 추가
+            var mapTypeControl = new kakao.maps.MapTypeControl();
+            map.addControl(mapTypeControl, kakao.maps.ControlPosition.TOPRIGHT);
+            var zoomControl = new kakao.maps.ZoomControl();
+            map.addControl(zoomControl, kakao.maps.ControlPosition.RIGHT);
+
+            var data = {json.dumps(map_data)};
+            
+            if (data.length > 0) {{
+                data.forEach(function(d) {{
+                    var content = '<div style="background:#d97706;color:white;padding:6px 10px;border-radius:8px;font-size:12px;font-weight:bold;border:1px solid #ffffff;box-shadow: 0px 2px 5px rgba(0,0,0,0.3); text-align:center;">' + 
+                                  d.name + '<br>' + 
+                                  '<span style="color:#fcd34d;">' + (d.price/10000).toFixed(1) + '억</span> (' + d.pyung + '평)</div>';
                     
-                    if map_data:
-                        center_lat, center_lng = map_data[0]['lat'], map_data[0]['lng']
-                        map_html = f"""
-                        <div id="map" style="width:100%;height:500px;border-radius:10px;"></div>
-                        <script src="//dapi.kakao.com/v2/maps/sdk.js?appkey={KAKAO_JS_KEY}"></script>
-                        <script>
-                            var map = new kakao.maps.Map(document.getElementById('map'), {{center: new kakao.maps.LatLng({center_lat}, {center_lng}), level: 5}});
-                            var data = {json.dumps(map_data)};
-                            data.forEach(function(d) {{
-                                var content = '<div style="background:#0052A4;color:white;padding:5px;border-radius:5px;font-size:12px;font-weight:bold;border:1px solid white;">' + d.name + '<br>' + (d.price/10000).toFixed(1) + '억</div>';
-                                new kakao.maps.CustomOverlay({{position: new kakao.maps.LatLng(d.lat, d.lng), content: content, map: map}});
-                            }});
-                        </script>
-                        """
-                        components.html(map_html, height=520)
-                    else:
-                        st.warning("좌표 변환에 실패했습니다. 다른 연월을 조회해 보세요.")
-                else:
-                    st.warning(f"{map_ym} 연월의 거래 데이터가 없습니다. (보통 1~2달 전 데이터를 조회해야 합니다)")
+                    var customOverlay = new kakao.maps.CustomOverlay({{
+                        position: new kakao.maps.LatLng(d.lat, d.lng),
+                        content: content,
+                        map: map
+                    }});
+                }});
+                
+                // 첫 번째 데이터 위치로 지도 중심 이동
+                map.setCenter(new kakao.maps.LatLng(data[0].lat, data[0].lng));
+            }}
+        </script>
+        """
+        components.html(map_html, height=620)
+        
+        if not map_data:
+            st.warning(f"⚠️ {map_ym}에 해당하는 실거래 데이터가 없거나 좌표 변환 중입니다. 지도는 기본 위치로 표시됩니다.")
+        else:
+            st.success(f"✅ 총 {len(map_data)}개의 실거래가 마커를 지도에 표시했습니다.")
 
     # ------------------------------------------
     # [탭 3] 🏆 브역대신평초 추천 (수식 포함)
@@ -294,7 +338,7 @@ else:
         with st.form("reco_form"):
             col_r1, col_r2 = st.columns(2)
             with col_r1:
-                target_region = st.selectbox("희망 거주 지역", list(LAWD_CD_DICT.keys()), index=6, key="reco_reg")
+                target_region = st.selectbox("희망 거주 지역", list(REGION_INFO.keys()), index=0, key="reco_reg")
                 budget_max = st.number_input("최대 예산 (만원)", value=40000, step=1000)
             with col_r2:
                 work_address = st.text_input("직장 주소 (도로명)", value="경북 포항시 남구 신항로 110")
@@ -304,11 +348,11 @@ else:
             with st.spinner("분석 중입니다..."):
                 work_lat, work_lng = get_coords(work_address)
                 if not work_lat:
-                    st.info(f"'{work_address}' 주소를 찾지 못해 포항시청 기준으로 거리를 계산합니다.")
-                    work_lat, work_lng = 36.0190, 129.3434 
+                    st.info(f"'{work_address}' 주소를 찾지 못해 선택하신 지역의 중심 좌표 기준으로 거리를 계산합니다.")
+                    work_lat, work_lng = REGION_INFO[target_region]["lat"], REGION_INFO[target_region]["lng"]
                 
                 search_ym = (datetime.datetime.now() - relativedelta(months=2)).strftime("%Y%m")
-                df = get_apt_data(LAWD_CD_DICT[target_region], search_ym)
+                df = get_apt_data(REGION_INFO[target_region]["code"], search_ym)
                 
                 if df.empty:
                     st.error("해당 지역의 최근 거래 데이터가 없습니다.")
@@ -332,7 +376,9 @@ else:
                             
                             st.markdown("객관적인 가격 비교를 위한 평당 단가 계산:")
                             
+                            
                             st.latex(r"평당 단가 = \frac{예상 매매가}{평수}")
+                            
                             
                             st.markdown(f"""
                             * **예상 매매가:** {apt['price']:,}만 원 ({apt['pyung']}평)
@@ -363,12 +409,11 @@ else:
                 st.rerun()
 
     # ------------------------------------------
-    # [탭 5] 📅 D-Day 관리 (체크리스트 자동 생성 기능 추가)
+    # [탭 5] 📅 D-Day 관리 (스마트 체크리스트)
     # ------------------------------------------
     with tab5:
         st.markdown("### 📅 청약 및 이사 D-Day 관리 (스마트 체크리스트)")
         
-        # 카테고리별 자동 체크리스트 템플릿
         checklist_templates = {
             "청약/분양": "- [ ] 공인인증서(공동인증서) 갱신 확인\n- [ ] 청약통장 예치금 지역별 기준 충족 확인\n- [ ] 입주자 모집공고문 정독 및 자격 요건 체크\n- [ ] 무주택 기간 및 부양가족 수 정확히 산정\n- [ ] 청약홈(ApplyHome) 모의 청약 연습하기",
             "계약/잔금": "- [ ] 등기부등본 당일 재발급 및 권리관계 확인\n- [ ] 은행 이체 한도 1일/1회 증액 확인\n- [ ] 신분증, 인감도장, 인감증명서 지참\n- [ ] 취등록세 및 법무사 비용 현금 준비\n- [ ] 선수관리비 정산 및 영수증 수령",
@@ -384,7 +429,6 @@ else:
             with col_d2:
                 d_cat = st.selectbox("카테고리 (선택 시 체크리스트 자동 생성)", list(checklist_templates.keys()))
                 
-            # 선택한 카테고리에 맞는 체크리스트를 기본값으로 제공
             d_tasks = st.text_area("상세 체크리스트 (자유롭게 수정 가능)", value=checklist_templates[d_cat], height=150)
             
             if st.form_submit_button("일정 및 체크리스트 추가", use_container_width=True) and d_title:
