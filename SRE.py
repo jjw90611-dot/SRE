@@ -1,328 +1,389 @@
 import streamlit as st
+import sqlite3
+import datetime
+import time
 import requests
+import re
+import calendar
+import pandas as pd
+import math
 import xml.etree.ElementTree as ET
 import streamlit.components.v1 as components
 import json
-import pandas as pd
-import math
-from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
 # ==========================================
-# 1. 페이지 설정 및 모던 UI (이전 스타일 복구)
+# [초기 설정] 페이지 세팅
 # ==========================================
-st.set_page_config(page_title="POSCO Future M - 프롭테크 플랫폼", layout="wide")
-
-st.markdown("""
-    <style>
-    .main-title { font-size: 2.5rem; font-weight: 900; color: #0052A4; margin-bottom: 0px; }
-    .sub-title { font-size: 1.2rem; color: #555; margin-bottom: 30px; }
-    .metric-box { background-color: #f8f9fa; padding: 20px; border-radius: 10px; box-shadow: 2px 2px 10px rgba(0,0,0,0.05); }
-    </style>
-""", unsafe_allow_html=True)
+st.set_page_config(page_title="부동산 맛동산", page_icon="🥜", layout="wide")
 
 # ==========================================
-# 2. API 키 검증
+# [API 키 설정] Groq, Kakao, Data.go.kr
 # ==========================================
 try:
+    GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
     KAKAO_REST_KEY = st.secrets["KAKAO_API_KEY"]
     KAKAO_JS_KEY = st.secrets["KAKAO_JS_KEY"]
     DATA_GO_KR_KEY = st.secrets["DATA_GO_KR_API_KEY"]
 except KeyError:
-    st.error("🚨 API 키가 설정되지 않았습니다. Streamlit Secrets를 확인해주세요.")
+    st.error("⚠️ 스트림릿 설정(Secrets)에 API 키(GROQ, KAKAO, DATA_GO_KR)가 모두 있는지 확인해주세요!")
     st.stop()
 
 # ==========================================
-# 3. 전국 주요 지역 법정동 코드
+# [데이터베이스 설정] SQLite3
 # ==========================================
-LAWD_CD_DICT = {
-    "서울 강남구": "11680", "서울 서초구": "11650", "서울 송파구": "11710", "서울 용산구": "11170", "서울 성동구": "11200",
-    "경기 성남 분당구": "41135", "경기 과천시": "41290", "경기 화성시": "41590", "경기 하남시": "41450",
-    "인천 연수구(송도)": "28185",
-    "부산 해운대구": "26350", "부산 수영구": "26500",
-    "대구 수성구": "27260",
-    "경북 포항 남구": "47111", "경북 포항 북구": "47113",
-    "세종특별자치시": "36110"
-}
+conn = sqlite3.connect('real_estate_matdongsan.db', check_same_thread=False)
+c = conn.cursor()
+c.execute('''CREATE TABLE IF NOT EXISTS users (user_id TEXT PRIMARY KEY, password TEXT)''')
+c.execute('''CREATE TABLE IF NOT EXISTS chat_records (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, date TEXT, query TEXT, answer TEXT)''')
+c.execute('''CREATE TABLE IF NOT EXISTS ddays (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, title TEXT, target_date TEXT, category TEXT)''')
+c.execute('''CREATE TABLE IF NOT EXISTS field_diaries (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, date TEXT, content TEXT)''')
+conn.commit()
 
 # ==========================================
-# 4. 핵심 분석 함수 모음
+# [CSS] 서울남산체 & 고대비 다크 테마
 # ==========================================
+st.markdown("""
+<style>
+    /* 서울남산체 웹폰트 적용 */
+    @font-face {
+        font-family: 'SeoulNamsanM';
+        src: url('https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_two@1.0/SeoulNamsanM.woff') format('woff');
+        font-weight: normal;
+        font-style: normal;
+    }
+
+    .stApp, p, span, div, h1, h2, h3, h4, h5, h6, label, input, textarea, button, table, th, td {
+        font-family: 'SeoulNamsanM', sans-serif !important;
+    }
+    
+    /* 배경: 다크 슬레이트 */
+    .stApp { 
+        background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); 
+        color: #ffffff !important; 
+    }
+    
+    /* 네온 타이틀 */
+    .neon-title {
+        font-size: 48px; font-weight: 900; color: #ffffff; text-align: center;
+        margin-top: 20px; margin-bottom: 10px; letter-spacing: -1px; line-height: 1.2;
+        text-shadow: 0 0 10px rgba(245, 158, 11, 0.8), 0 0 20px rgba(245, 158, 11, 0.5);
+    }
+    .sub-title { color: #fcd34d; font-size: 20px; margin-bottom: 40px; font-weight: bold; text-align: center; }
+
+    /* 입력창 디자인 (배경을 더 어둡게 하여 글자 가독성 확보) */
+    div[data-baseweb="input"] > div, div[data-baseweb="textarea"] > div, div[data-baseweb="select"] > div:first-child {
+        background-color: rgba(0, 0, 0, 0.6) !important; 
+        border: 2px solid #d97706 !important; 
+        border-radius: 12px !important;
+    }
+    input, textarea { color: #ffffff !important; font-size: 18px !important; font-weight: bold !important; }
+    input::placeholder, textarea::placeholder { color: #9ca3af !important; font-weight: normal !important; }
+    
+    /* 버튼 디자인 */
+    div[data-testid="stButton"] > button, div[data-testid="stFormSubmitButton"] > button {
+        background: linear-gradient(135deg, #f59e0b, #d97706) !important; 
+        color: #ffffff !important; 
+        font-weight: bold !important; font-size: 18px !important; padding: 12px 24px !important;
+        border: none !important; border-radius: 12px !important;
+        box-shadow: 0 4px 15px rgba(217, 119, 6, 0.6) !important;
+    }
+
+    /* 탭 디자인 */
+    .stTabs [data-baseweb="tab-list"] { gap: 8px; justify-content: center; background-color: transparent; }
+    .stTabs [data-baseweb="tab"] { 
+        background-color: rgba(0,0,0,0.4); border-radius: 10px 10px 0 0; 
+        padding: 12px 20px; color: #cbd5e1; font-size: 18px; font-weight: bold; border: 1px solid #334155; border-bottom: none;
+    }
+    .stTabs [aria-selected="true"] { 
+        background-color: rgba(245, 158, 11, 0.2); color: #fcd34d !important; 
+        border-bottom: 4px solid #f59e0b !important; 
+    }
+
+    /* 채팅 UI */
+    .chat-user { text-align: right; margin-bottom: 15px; }
+    .chat-user span { background-color: #3b82f6; color: white; padding: 12px 18px; border-radius: 20px 20px 0 20px; display: inline-block; font-size: 16px; font-weight: bold; }
+    .chat-ai { text-align: left; margin-bottom: 25px; }
+    .chat-ai span { background-color: rgba(245, 158, 11, 0.15); color: #fdf6e3; border: 1px solid #f59e0b; padding: 15px 20px; border-radius: 20px 20px 20px 0; display: inline-block; font-size: 16px; line-height: 1.6; }
+
+    /* 카드 UI */
+    .info-card {
+        background: rgba(0,0,0,0.5); border: 1px solid #f59e0b;
+        border-radius: 16px; padding: 20px; margin-bottom: 15px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ==========================================
+# [세션 상태 관리]
+# ==========================================
+if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
+if 'user_id' not in st.session_state: st.session_state['user_id'] = ""
+if 'chat_session' not in st.session_state: st.session_state['chat_session'] = [] 
+
+# ==========================================
+# [프롭테크 핵심 함수] 에러 방지 완벽 적용
+# ==========================================
+LAWD_CD_DICT = {
+    "서울 강남구": "11680", "서울 송파구": "11710", "경기 성남 분당구": "41135", "경기 하남시": "41450",
+    "부산 해운대구": "26350", "대구 수성구": "27260", "경북 포항 남구": "47111", "경북 포항 북구": "47113"
+}
+
 @st.cache_data(ttl=3600)
 def get_apt_data(lawd_cd, deal_ym):
-    """공공데이터포털에서 실거래가 가져오기"""
     url = "http://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev"
     params = {"serviceKey": DATA_GO_KR_KEY, "pageNo": "1", "numOfRows": "100", "LAWD_CD": lawd_cd, "DEAL_YMD": deal_ym}
     try:
-        res = requests.get(url, params=params)
+        res = requests.get(url, params=params, timeout=5)
         root = ET.fromstring(res.content)
         data = []
         for item in root.findall('.//item'):
             price = int(item.findtext('dealAmount').replace(',', '').strip())
             area = float(item.findtext('excluUseAr'))
             data.append({
-                "apt_name": item.findtext('aptNm'),
-                "price": price,
-                "area": area,
-                "pyung": round(area / 3.3, 1),
-                "floor": item.findtext('floor'),
-                "dong": item.findtext('umdNm'),
-                "jibun": item.findtext('jibun'),
+                "apt_name": item.findtext('aptNm'), "price": price, "area": area, "pyung": round(area / 3.3, 1),
+                "floor": item.findtext('floor'), "dong": item.findtext('umdNm'), "jibun": item.findtext('jibun'),
                 "build_year": int(item.findtext('buildYear')) if item.findtext('buildYear') else 0
             })
         return pd.DataFrame(data)
-    except Exception as e:
+    except:
         return pd.DataFrame()
 
 def get_coords(address):
-    """카카오 API로 주소를 위경도로 변환 (검색어 정제 포함)"""
-    # 괄호 안의 내용이나 불필요한 건물명 제거 (예: "신항로 110 포스코퓨처엠" -> "신항로 110")
+    """카카오 API 에러 방지 무적 로직"""
     clean_address = address.split('(')[0].strip()
-    # 도로명 주소 형식(OO로 00)까지만 추출하는 간단한 휴리스틱
-    parts = clean_address.split()
-    if len(parts) > 4:
-        clean_address = " ".join(parts[:4])
-
     url = "https://dapi.kakao.com/v2/local/search/address.json"
     headers = {"Authorization": f"KakaoAK {KAKAO_REST_KEY}"}
     try:
         res = requests.get(url, headers=headers, params={"query": clean_address}).json()
-        if res['documents']:
+        if res.get('documents'):
             return float(res['documents'][0]['y']), float(res['documents'][0]['x'])
         
-        # 주소 검색 실패 시 키워드 검색으로 재시도
         url_kw = "https://dapi.kakao.com/v2/local/search/keyword.json"
         res_kw = requests.get(url_kw, headers=headers, params={"query": address}).json()
-        if res_kw['documents']:
+        if res_kw.get('documents'):
             return float(res_kw['documents'][0]['y']), float(res_kw['documents'][0]['x'])
-            
     except:
         pass
-    return None, None
+    return None, None # 실패 시 None 반환하여 예외 처리
 
 def haversine_distance(lat1, lon1, lat2, lon2):
-    """두 위경도 사이의 직선 거리(km) 계산"""
     R = 6371.0
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
+    dlat, dlon = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
     a = math.sin(dlat / 2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2)**2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return R * c
-
-def check_brand(apt_name):
-    """1군 브랜드 확인"""
-    brands = ['자이', '더샵', '푸르지오', '힐스테이트', '아이파크', '래미안', '롯데캐슬', 'e편한세상', 'SK뷰', '포레나']
-    for b in brands:
-        if b in apt_name: return b
-    return "일반 브랜드"
+    return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
 
 # ==========================================
-# 5. 메인 UI 구성
+# [화면 구성] 1. 로그인 / 회원가입 화면
 # ==========================================
-st.markdown('<p class="main-title">🏆 30년 차 전문가의 종합 입지 분석기</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">부동산 실거래가는 물론, 주변 숨은 맛집과 캠핑장까지 한 번에 분석해 드립니다.</p>', unsafe_allow_html=True)
-
-tab1, tab2 = st.tabs(["🗺️ 인터랙티브 실거래가 지도", "🏆 브역대신평초 맞춤형 AI 추천"])
-
-# ------------------------------------------
-# 탭 1: 인터랙티브 실거래가 지도
-# ------------------------------------------
-with tab1:
-    st.subheader("📍 아파트 실거래가 조회 (클릭 시 상세 정보)")
+if not st.session_state['logged_in']:
+    st.markdown("<div class='neon-title'>🏢 부동산 맛동산 🥜</div>", unsafe_allow_html=True)
+    st.markdown("<div class='sub-title'>달콤하고 바삭한 부동산 정보, 2026년형 AI 프롭테크 솔루션</div>", unsafe_allow_html=True)
     
-    col1, col2 = st.columns(2)
-    with col1:
-        map_region = st.selectbox("지역 선택", list(LAWD_CD_DICT.keys()), index=13) # 기본값 포항 남구
-    with col2:
-        # 실거래가 데이터 지연을 고려하여 기본값을 2달 전으로 설정
-        default_ym = (datetime.now() - relativedelta(months=2)).strftime("%Y%m")
-        map_ym = st.text_input("계약 연월 (YYYYMM)", value=default_ym)
-        st.caption("💡 실거래가 신고 기한(30일)을 고려하여 1~2달 전 데이터를 조회하는 것을 권장합니다.")
-        
-    if st.button("지도에 아파트 띄우기", key="apt_btn"):
-        with st.spinner("국토교통부 데이터를 불러오는 중입니다..."):
-            df_map = get_apt_data(LAWD_CD_DICT[map_region], map_ym)
-            
-            if not df_map.empty:
-                df_map = df_map.drop_duplicates(subset=['apt_name'], keep='first')
-                
-                map_data = []
-                for _, row in df_map.iterrows():
-                    lat, lng = get_coords(f"{row['dong']} {row['jibun']}")
-                    if lat and lng:
-                        map_data.append({
-                            "name": row['apt_name'],
-                            "price": row['price'],
-                            "pyung": row['pyung'],
-                            "year": row['build_year'],
-                            "lat": lat, "lng": lng
-                        })
-                
-                if map_data:
-                    center_lat, center_lng = map_data[0]['lat'], map_data[0]['lng']
-                    
-                    map_html = f"""
-                    <!DOCTYPE html>
-                    <html>
-                    <head>
-                        <meta charset="utf-8">
-                        <style>
-                            .apt-label {{ background-color: #0052A4; color: white; padding: 5px 10px; border-radius: 15px; font-weight: bold; font-size: 12px; border: 2px solid white; box-shadow: 0px 2px 4px rgba(0,0,0,0.3); cursor: pointer; }}
-                            .info-window {{ padding: 10px; font-size: 14px; min-width: 200px; }}
-                        </style>
-                    </head>
-                    <body>
-                    <div id="map" style="width:100%;height:600px;border-radius:10px;"></div>
-                    <script type="text/javascript" src="//dapi.kakao.com/v2/maps/sdk.js?appkey={KAKAO_JS_KEY}"></script>
-                    <script>
-                        var mapContainer = document.getElementById('map'),
-                            mapOption = {{ center: new kakao.maps.LatLng({center_lat}, {center_lng}), level: 5 }};
-                        var map = new kakao.maps.Map(mapContainer, mapOption);
-                        var data = {json.dumps(map_data)};
-                        var bounds = new kakao.maps.LatLngBounds();
-                        var activeInfoWindow = null;
-                        
-                        data.forEach(function(d) {{
-                            var position = new kakao.maps.LatLng(d.lat, d.lng);
-                            
-                            // 커스텀 오버레이 (마커 대신 가격 라벨 표시)
-                            var labelContent = '<div class="apt-label" onclick="showInfo(\'' + d.name + '\', ' + d.price + ', ' + d.pyung + ', ' + d.year + ', ' + d.lat + ', ' + d.lng + ')">' + d.name + '<br>' + (d.price/10000).toFixed(1) + '억</div>';
-                            var customOverlay = new kakao.maps.CustomOverlay({{
-                                position: position,
-                                content: labelContent,
-                                yAnchor: 1
-                            }});
-                            customOverlay.setMap(map);
-                            bounds.extend(position);
-                        }});
-                        
-                        // 전역 함수로 인포윈도우 띄우기
-                        window.showInfo = function(name, price, pyung, year, lat, lng) {{
-                            if (activeInfoWindow) {{ activeInfoWindow.close(); }}
-                            
-                            var content = '<div class="info-window">' +
-                                          '<b>🏢 ' + name + '</b><br>' +
-                                          '💰 실거래가: ' + (price/10000).toFixed(1) + '억 원<br>' +
-                                          '📐 면적: ' + pyung + '평<br>' +
-                                          '🏗️ 건축연도: ' + year + '년' +
-                                          '</div>';
-                                          
-                            var position = new kakao.maps.LatLng(lat, lng);
-                            var infowindow = new kakao.maps.InfoWindow({{
-                                position: position,
-                                content: content,
-                                removable: true
-                            }});
-                            
-                            infowindow.open(map);
-                            activeInfoWindow = infowindow;
-                        }};
-                        
-                        map.setBounds(bounds);
-                    </script>
-                    </body>
-                    </html>
-                    """
-                    components.html(map_html, height=620)
+    col_empty1, col_login, col_empty2 = st.columns([1, 2, 1])
+    with col_login:
+        auth_tab1, auth_tab2 = st.tabs(["🔑 로그인", "📝 회원가입"])
+        with auth_tab1:
+            login_id = st.text_input("아이디", key="login_id")
+            login_pw = st.text_input("비밀번호", type="password", key="login_pw")
+            if st.button("로그인", use_container_width=True):
+                c.execute("SELECT * FROM users WHERE user_id=? AND password=?", (login_id, login_pw))
+                if c.fetchone():
+                    st.session_state['logged_in'] = True
+                    st.session_state['user_id'] = login_id
+                    st.rerun()
                 else:
-                    st.warning("좌표를 변환할 수 있는 아파트가 없습니다.")
-            else:
-                st.error(f"{map_ym} 연월에 해당하는 거래 데이터가 없습니다. 다른 연월을 선택해주세요.")
+                    st.error("아이디 또는 비밀번호가 일치하지 않습니다.")
+                    
+        with auth_tab2:
+            reg_id = st.text_input("사용할 아이디", key="reg_id")
+            reg_pw = st.text_input("사용할 비밀번호", type="password", key="reg_pw")
+            reg_pw_confirm = st.text_input("비밀번호 확인", type="password", key="reg_pw_confirm")
+            if st.button("가입하기", use_container_width=True):
+                if reg_pw == reg_pw_confirm and reg_id:
+                    try:
+                        c.execute("INSERT INTO users (user_id, password) VALUES (?, ?)", (reg_id, reg_pw))
+                        conn.commit()
+                        st.success("가입 완료! 로그인 탭에서 로그인해주세요.")
+                    except:
+                        st.error("이미 존재하는 아이디입니다.")
 
-# ------------------------------------------
-# 탭 2: 브역대신평초 맞춤형 AI 추천
-# ------------------------------------------
-with tab2:
-    st.subheader("🏆 브역대신평초 맞춤형 아파트 추천기")
+# ==========================================
+# [화면 구성] 2. 메인 서비스 화면 (5개 탭)
+# ==========================================
+else:
+    st.markdown(f"<div class='neon-title' style='font-size: 36px;'>🏢 {st.session_state['user_id']}님의 부동산 맛동산 🥜</div>", unsafe_allow_html=True)
     
-    with st.form("consulting_form"):
-        col1, col2 = st.columns(2)
-        with col1:
-            target_region = st.selectbox("희망 거주 지역", list(LAWD_CD_DICT.keys()), index=13)
-            budget_min = st.number_input("최소 예산 (만원)", value=20000, step=1000)
-            budget_max = st.number_input("최대 예산 (만원)", value=40000, step=1000)
-        with col2:
-            work_address = st.text_input("직장 주소 (도로명 주소 권장)", value="경북 포항시 남구 신항로 110")
-            custom_address = st.text_input("부모님 댁 / 자주 가는 곳 주소", value="경북 포항시 남구 대잠동")
-            
-        submit_btn = st.form_submit_button("📊 AI 맞춤형 분석 시작", use_container_width=True)
+    col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 1])
+    with col_btn3:
+        if st.button("🔒 로그아웃", use_container_width=True):
+            st.session_state['logged_in'] = False
+            st.rerun()
 
-    if submit_btn:
-        st.markdown("---")
-        with st.spinner("데이터 분석 중입니다..."):
-            
-            work_lat, work_lng = get_coords(work_address)
-            custom_lat, custom_lng = get_coords(custom_address)
-            
-            if not work_lat:
-                st.error(f"'{work_address}' 주소를 찾을 수 없습니다. 정확한 도로명 주소나 동 이름을 입력해주세요.")
-                st.stop()
-                
-            # 추천 로직에서도 2달 전 데이터를 기본으로 사용
-            search_ym = (datetime.now() - relativedelta(months=2)).strftime("%Y%m")
-            df = get_apt_data(LAWD_CD_DICT[target_region], search_ym)
-            
-            if df.empty:
-                st.error(f"{target_region} 지역의 최근({search_ym}) 거래 데이터가 없습니다.")
-                st.stop()
-                
-            df_filtered = df[(df['price'] >= budget_min) & (df['price'] <= budget_max)].copy()
-            
-            if len(df_filtered) == 0:
-                st.warning(f"🚨 조건(예산 {budget_min/10000}억~{budget_max/10000}억)에 맞는 실재하는 아파트는 0개입니다. 예산을 조정해주세요.")
-                st.stop()
-                
-            candidates = []
-            df_unique = df_filtered.sort_values('price', ascending=False).drop_duplicates(subset=['apt_name'])
-            
-            for _, row in df_unique.iterrows():
-                apt_lat, apt_lng = get_coords(f"{row['dong']} {row['jibun']}")
-                if not apt_lat: continue
-                
-                dist_work = haversine_distance(apt_lat, apt_lng, work_lat, work_lng)
-                time_work = int((dist_work / 30) * 60) + 5
-                
-                dist_custom = haversine_distance(apt_lat, apt_lng, custom_lat, custom_lng) if custom_lat else 999
-                
-                age = datetime.now().year - row['build_year'] if row['build_year'] > 0 else 99
-                brand = check_brand(row['apt_name'])
-                
-                score = dist_work + (age * 0.5) - (5 if brand != "일반 브랜드" else 0)
-                
-                candidates.append({
-                    "name": row['apt_name'], "dong": row['dong'], "price": row['price'],
-                    "pyung": row['pyung'], "year": row['build_year'], "age": age,
-                    "brand": brand, "dist_work": dist_work, "time_work": time_work,
-                    "dist_custom": dist_custom, "score": score
-                })
-            
-            candidates = sorted(candidates, key=lambda x: x['score'])[:3]
-            
-            st.markdown(f"### 📊 맞춤형 요약 분석")
-            st.info(f"예산({budget_min/10000}억~{budget_max/10000}억)과 직장({work_address}) 위치를 고려하여, {target_region} 내 최적의 동선을 가진 3곳을 추천합니다.")
-            
-            st.markdown("### 🏆 추천 아파트 TOP 3")
-            
-            for i, apt in enumerate(candidates):
-                with st.expander(f"🥇 {i+1}위: {apt['name']} ({apt['dong']}) - 예상가 {apt['price']/10000:.1f}억", expanded=True):
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🤖 AI 상담", "🗺️ 실거래가 지도", "🏆 입지 추천", "📝 임장 일기", "📅 D-Day"])
+
+    # ------------------------------------------
+    # [탭 1] AI 부동산 상담 (Groq)
+    # ------------------------------------------
+    with tab1:
+        st.markdown("### 🤖 바삭하고 명쾌한 AI 부동산 상담")
+        if st.button("🔄 대화 초기화", key="reset_chat"):
+            st.session_state['chat_session'] = []
+            st.rerun()
+
+        for msg in st.session_state['chat_session']:
+            st.markdown(f"<div class='chat-user'><span>{msg['query']}</span></div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='chat-ai'><span>{msg['answer']}</span></div>", unsafe_allow_html=True)
+
+        with st.form("chat_form", clear_on_submit=True):
+            user_query = st.text_area("질문을 입력하세요.", height=100)
+            if st.form_submit_button("질문하기", use_container_width=True) and user_query.strip():
+                with st.spinner("AI가 답변을 준비 중입니다..."):
+                    messages = [{"role": "system", "content": "당신은 부동산 맛동산 AI입니다. 한국어만 사용하세요."}]
+                    for m in st.session_state['chat_session']:
+                        messages.extend([{"role": "user", "content": m['query']}, {"role": "assistant", "content": m['answer']}])
+                    messages.append({"role": "user", "content": user_query})
                     
-                    st.markdown("객관적인 가격 비교를 위한 평당 단가 계산:")
+                    res = requests.post("https://api.groq.com/openai/v1/chat/completions", 
+                                        headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, 
+                                        json={"model": "llama-3.3-70b-versatile", "messages": messages})
+                    if res.status_code == 200:
+                        answer = re.sub(r'[a-zA-Z\u4e00-\u9fff]', '', res.json()['choices'][0]['message']['content']).strip()
+                        st.session_state['chat_session'].append({'query': user_query, 'answer': answer})
+                        st.rerun()
+
+    # ------------------------------------------
+    # [탭 2] 🗺️ 실거래가 지도 (에러 방지)
+    # ------------------------------------------
+    with tab2:
+        st.markdown("### 🗺️ 클릭하면 가격이 나오는 실거래가 지도")
+        col_m1, col_m2 = st.columns(2)
+        with col_m1: map_region = st.selectbox("지역 선택", list(LAWD_CD_DICT.keys()), index=6)
+        with col_m2: map_ym = st.text_input("계약 연월", value=(datetime.datetime.now() - relativedelta(months=2)).strftime("%Y%m"))
+        
+        if st.button("지도 불러오기", use_container_width=True):
+            with st.spinner("데이터를 불러오는 중입니다..."):
+                df_map = get_apt_data(LAWD_CD_DICT[map_region], map_ym)
+                if not df_map.empty:
+                    df_map = df_map.drop_duplicates(subset=['apt_name'])
+                    map_data = []
+                    for _, row in df_map.iterrows():
+                        lat, lng = get_coords(f"{row['dong']} {row['jibun']}")
+                        if lat and lng:
+                            map_data.append({"name": row['apt_name'], "price": row['price'], "lat": lat, "lng": lng})
                     
-                    st.latex(r"평당 단가 = \frac{예상 매매가}{평수}")
-                    
-                    price_per_pyung = int(apt['price'] / apt['pyung'])
-                    st.markdown(f"**👉 계산 결과: {price_per_pyung:,}만 원 / 평**")
-                    
-                    st.markdown(f"""
-                    * **💰 예상 매매가:** {apt['price']:,}만 원 ({apt['pyung']}평형)
-                    * **🚗 직장 출퇴근:** 약 {apt['dist_work']:.1f}km (차량 예상 {apt['time_work']}분)
-                    * **👨‍👩‍👧 커스텀 주소 거리:** 약 {apt['dist_custom']:.1f}km
-                    
-                    **[브역대신평초 상세 평가]**
-                    * **브 (브랜드):** {apt['brand']}
-                    * **역 (교통):** 직장까지 차량 {apt['time_work']}분
-                    * **대 (대단지):** 현장 확인 요망
-                    * **신 (신축):** {apt['year']}년식 ({apt['age']}년차)
-                    * **평 (평지):** 카카오맵 지형도 확인 권장
-                    * **초 (초품아):** 반경 1km 내 초등학교 배정 예상
-                    """)
+                    if map_data:
+                        center_lat, center_lng = map_data[0]['lat'], map_data[0]['lng']
+                        map_html = f"""
+                        <div id="map" style="width:100%;height:500px;border-radius:10px;"></div>
+                        <script src="//dapi.kakao.com/v2/maps/sdk.js?appkey={KAKAO_JS_KEY}"></script>
+                        <script>
+                            var map = new kakao.maps.Map(document.getElementById('map'), {{center: new kakao.maps.LatLng({center_lat}, {center_lng}), level: 5}});
+                            var data = {json.dumps(map_data)};
+                            data.forEach(function(d) {{
+                                var content = '<div style="background:#0052A4;color:white;padding:5px;border-radius:5px;font-size:12px;">' + d.name + '<br>' + (d.price/10000).toFixed(1) + '억</div>';
+                                new kakao.maps.CustomOverlay({{position: new kakao.maps.LatLng(d.lat, d.lng), content: content, map: map}});
+                            }});
+                        </script>
+                        """
+                        components.html(map_html, height=520)
+                    else:
+                        st.warning("해당 지역의 아파트 좌표를 변환할 수 없습니다. (카카오 API 검색 결과 없음)")
+                else:
+                    st.warning(f"{map_ym} 연월의 거래 데이터가 없습니다.")
+
+    # ------------------------------------------
+    # [탭 3] 🏆 브역대신평초 추천 (에러 방지 & 수식)
+    # ------------------------------------------
+    with tab3:
+        st.markdown("### 🏆 브역대신평초 맞춤형 아파트 추천")
+        with st.form("reco_form"):
+            col_r1, col_r2 = st.columns(2)
+            with col_r1:
+                target_region = st.selectbox("희망 거주 지역", list(LAWD_CD_DICT.keys()), index=6)
+                budget_max = st.number_input("최대 예산 (만원)", value=40000, step=1000)
+            with col_r2:
+                work_address = st.text_input("직장 주소 (도로명)", value="경북 포항시 남구 신항로 110")
+            submit_reco = st.form_submit_button("AI 분석 시작", use_container_width=True)
+
+        if submit_reco:
+            with st.spinner("분석 중입니다..."):
+                work_lat, work_lng = get_coords(work_address)
+                if not work_lat:
+                    st.warning(f"'{work_address}' 주소를 정확히 찾지 못해 기본 좌표(시청) 기준으로 거리를 계산합니다.")
+                    work_lat, work_lng = 36.0190, 129.3434 # 포항시청 기본값
+                
+                search_ym = (datetime.datetime.now() - relativedelta(months=2)).strftime("%Y%m")
+                df = get_apt_data(LAWD_CD_DICT[target_region], search_ym)
+                
+                if df.empty:
+                    st.error("해당 지역의 최근 거래 데이터가 없습니다.")
+                else:
+                    df_filtered = df[df['price'] <= budget_max].drop_duplicates(subset=['apt_name'])
+                    if len(df_filtered) == 0:
+                        st.warning("예산에 맞는 아파트가 없습니다.")
+                    else:
+                        candidates = []
+                        for _, row in df_filtered.iterrows():
+                            apt_lat, apt_lng = get_coords(f"{row['dong']} {row['jibun']}")
+                            if apt_lat:
+                                dist = haversine_distance(apt_lat, apt_lng, work_lat, work_lng)
+                                candidates.append({"name": row['apt_name'], "price": row['price'], "pyung": row['pyung'], "dist": dist})
+                        
+                        candidates = sorted(candidates, key=lambda x: x['dist'])[:3]
+                        
+                        for i, apt in enumerate(candidates):
+                            st.markdown(f"<div class='info-card'><h4>🥇 {i+1}위: {apt['name']}</h4>", unsafe_allow_html=True)
+                            
+                            st.markdown("객관적인 가격 비교를 위한 평당 단가 계산:")
+                            
+                            st.latex(r"평당 단가 = \frac{예상 매매가}{평수}")
+                            
+                            st.markdown(f"""
+                            * **예상 매매가:** {apt['price']:,}만 원 ({apt['pyung']}평)
+                            * **평당 단가:** {int(apt['price']/apt['pyung']):,}만 원/평
+                            * **직장까지 거리:** 약 {apt['dist']:.1f}km
+                            </div>
+                            """, unsafe_allow_html=True)
+
+    # ------------------------------------------
+    # [탭 4] 📝 임장 일기 (기존 코드 유지)
+    # ------------------------------------------
+    with tab4:
+        st.markdown("### 📝 스마트 임장 일기")
+        today_date = datetime.date.today()
+        selected_date = st.date_input("기록할 날짜", value=today_date)
+        
+        c.execute("SELECT content FROM field_diaries WHERE user_id=? AND date=?", (st.session_state['user_id'], str(selected_date)))
+        row = c.fetchone()
+        current_content = row[0] if row else ""
+        
+        with st.form("diary_form"):
+            new_content = st.text_area("임장 기록", value=current_content, height=150)
+            if st.form_submit_button("💾 기록 저장", use_container_width=True):
+                if row: c.execute("UPDATE field_diaries SET content=? WHERE user_id=? AND date=?", (new_content, st.session_state['user_id'], str(selected_date)))
+                else: c.execute("INSERT INTO field_diaries (user_id, date, content) VALUES (?, ?, ?)", (st.session_state['user_id'], str(selected_date), new_content))
+                conn.commit()
+                st.success("저장되었습니다!")
+                st.rerun()
+
+    # ------------------------------------------
+    # [탭 5] 📅 D-Day (기존 코드 유지)
+    # ------------------------------------------
+    with tab5:
+        st.markdown("### 📅 청약 및 이사 D-Day 관리")
+        with st.form("dday_form"):
+            d_title = st.text_input("일정 이름")
+            d_date = st.date_input("목표 날짜")
+            d_cat = st.selectbox("카테고리", ["청약/분양", "계약/잔금", "이사", "기타"])
+            if st.form_submit_button("일정 추가", use_container_width=True) and d_title:
+                c.execute("INSERT INTO ddays (user_id, title, target_date, category) VALUES (?, ?, ?, ?)", (st.session_state['user_id'], d_title, str(d_date), d_cat))
+                conn.commit()
+                st.rerun()
+                
+        c.execute("SELECT id, title, target_date, category FROM ddays WHERE user_id=? ORDER BY target_date ASC", (st.session_state['user_id'],))
+        for d_id, title, t_date_str, cat in c.fetchall():
+            delta = (datetime.datetime.strptime(t_date_str, "%Y-%m-%d").date() - datetime.date.today()).days
+            d_text = f"D-{delta}" if delta > 0 else (f"D+{-delta}" if delta < 0 else "D-Day")
+            st.markdown(f"<div class='info-card'><b>{cat}</b> | {title} <span style='float:right; color:#fcd34d; font-size:20px;'>{d_text}</span></div>", unsafe_allow_html=True)
