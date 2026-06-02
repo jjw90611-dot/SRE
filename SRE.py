@@ -68,7 +68,7 @@ map_html = f"""
 <head>
     <meta charset="utf-8">
     <!-- 🚨 여기에 반드시 https: 를 붙여야 합니다! -->
-    <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={KAKAO_JS_KEY}"></script>
+    <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=..."></script>
 </head>
 <body>
     <div id="map" style="width:100%;height:400px;"></div>
