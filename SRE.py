@@ -1,6 +1,5 @@
 import streamlit as st
 from groq import Groq
-import os
 
 # 페이지 설정
 st.set_page_config(page_title="포항 부동산 컨설턴트", page_icon="🏠", layout="centered")
@@ -9,11 +8,12 @@ st.set_page_config(page_title="포항 부동산 컨설턴트", page_icon="🏠",
 st.title("🏠 포항시 맞춤형 부동산 추천 서비스")
 st.markdown("**포스코퓨처엠 임직원**을 위한 직장/예산 맞춤형 실거주 아파트 추천 시스템입니다.")
 
-# 사이드바: API 키 입력 (또는 Streamlit Secrets 사용)
-with st.sidebar:
-    st.header("설정")
-    api_key = st.text_input("Groq API Key를 입력하세요", type="password")
-    st.markdown("[Groq API Key 발급받기](https://console.groq.com/keys)")
+# Streamlit Secrets에서 Groq API Key 자동 불러오기
+try:
+    api_key = st.secrets["GROQ_API_KEY"]
+except KeyError:
+    st.error("⚠️ Streamlit Secrets에 'GROQ_API_KEY'가 설정되지 않았습니다. 설정(Settings) -> Secrets 메뉴를 확인해주세요.")
+    st.stop() # 키가 없으면 여기서 실행을 멈춤
 
 # 사용자 입력 폼
 with st.form("real_estate_form"):
@@ -68,14 +68,12 @@ $$ 평당 단가 = \\frac{예상 매매가}{평수} $$
 
 # 실행 로직
 if submit_button:
-    if not api_key:
-        st.warning("좌측 사이드바에 Groq API Key를 입력해주세요.")
-    elif not location or not budget:
+    if not location or not budget:
         st.warning("희망 거주지와 가용 예산을 모두 입력해주세요.")
     else:
         with st.spinner("부동산 데이터를 분석하고 있습니다. 잠시만 기다려주세요..."):
             try:
-                # Groq 클라이언트 초기화
+                # Groq 클라이언트 초기화 (Secrets에서 가져온 키 사용)
                 client = Groq(api_key=api_key)
                 
                 # 사용자 입력 메시지 구성
@@ -86,14 +84,14 @@ if submit_button:
                 3. 가용 예산: {budget}
                 """
                 
-                # API 호출 (llama3-70b 모델 사용 - 추론 능력이 뛰어남)
+                # API 호출 (llama3-70b 모델 사용)
                 chat_completion = client.chat.completions.create(
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_message}
                     ],
                     model="llama3-70b-8192",
-                    temperature=0.3, # 사실 기반 답변을 위해 온도를 낮춤
+                    temperature=0.3, 
                     max_tokens=3000
                 )
                 
