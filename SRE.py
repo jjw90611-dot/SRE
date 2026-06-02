@@ -63,15 +63,26 @@ st.subheader("3️⃣ 카카오 JS API (지도 렌더링) 테스트")
 st.info("💡 아래에 지도가 보이지 않는다면 카카오 디벨로퍼스 'Web 플랫폼'에 http://localhost:8501 이 등록되지 않은 것입니다.")
 
 map_html = f"""
-<div id="map" style="width:100%;height:400px;border:2px solid red;"></div>
-<script src="//dapi.kakao.com/v2/maps/sdk.js?appkey={KAKAO_JS_KEY}"></script>
-<script>
-    var mapContainer = document.getElementById('map'),
-        mapOption = {{ 
-            center: new kakao.maps.LatLng(37.500, 127.036), 
-            level: 3 
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <!-- 🚨 여기에 반드시 https: 를 붙여야 합니다! -->
+    <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={KAKAO_JS_KEY}"></script>
+</head>
+<body>
+    <div id="map" style="width:100%;height:400px;"></div>
+    <script>
+        var container = document.getElementById('map');
+        var options = {{
+            center: new kakao.maps.LatLng(37.566826, 126.9786567),
+            level: 3
         }};
-    var map = new kakao.maps.Map(mapContainer, mapOption);
-</script>
+        var map = new kakao.maps.Map(container, options);
+    </script>
+</body>
+</html>
 """
+components.html(map_html, height=450)
+
 components.html(map_html, height=420)
