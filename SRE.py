@@ -19,16 +19,25 @@ st.markdown("---")
 # 2. API 키 설정 (사이드바)
 # ==========================================
 st.sidebar.header("🔑 API 키 설정")
-groq_api_key = st.sidebar.text_input("Groq API Key", type="password", placeholder="gsk_...")
-data_api_key = st.sidebar.text_input("공공데이터포털 API Key (Decoding)", type="password", placeholder="국토교통부 실거래가 API 키")
 
+# 1. secrets 파일에서 먼저 키를 불러옵니다.
+groq_api_key = os.environ.get("GROQ_API_KEY") or (st.secrets["GROQ_API_KEY"] if "GROQ_API_KEY" in st.secrets else None)
+data_api_key = os.environ.get("DATA_API_KEY") or (st.secrets["DATA_API_KEY"] if "DATA_API_KEY" in st.secrets else None)
+
+# 2. 키가 없으면 입력창을 띄우고, 있으면 성공 메시지를 띄웁니다.
 if not groq_api_key:
-    groq_api_key = os.environ.get("GROQ_API_KEY") or (st.secrets["GROQ_API_KEY"] if "GROQ_API_KEY" in st.secrets else None)
-if not data_api_key:
-    data_api_key = os.environ.get("DATA_API_KEY") or (st.secrets["DATA_API_KEY"] if "DATA_API_KEY" in st.secrets else None)
+    groq_api_key = st.sidebar.text_input("Groq API Key", type="password", placeholder="gsk_...")
+else:
+    st.sidebar.success("✅ Groq API Key 자동 연동 완료")
 
+if not data_api_key:
+    data_api_key = st.sidebar.text_input("공공데이터포털 API Key (Decoding)", type="password", placeholder="국토교통부 실거래가 API 키")
+else:
+    st.sidebar.success("✅ 공공데이터 API Key 자동 연동 완료")
+
+# 3. 둘 중 하나라도 없으면 앱 실행을 멈춥니다.
 if not groq_api_key or not data_api_key:
-    st.info("👈 좌측 사이드바에 Groq API Key와 공공데이터 API Key를 모두 입력해야 서비스가 시작됩니다.")
+    st.info("👈 API Key가 필요합니다. secrets.toml을 확인하거나 직접 입력해주세요.")
     st.stop()
 
 client = Groq(api_key=groq_api_key)
@@ -36,6 +45,7 @@ client = Groq(api_key=groq_api_key)
 if st.sidebar.button("대화 초기화 🔄"):
     st.session_state.messages = []
     st.rerun()
+
 
 # ==========================================
 # 3. 공공데이터 API 호출 함수 (최근 3개월 조회)
