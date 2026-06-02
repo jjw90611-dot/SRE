@@ -67,22 +67,26 @@ map_html = f"""
 <html>
 <head>
     <meta charset="utf-8">
-    <!-- 🚨 여기에 반드시 https: 를 붙여야 합니다! -->
-    <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=..."></script>
+    <!-- 1. https: 확인 / 2. 끝에 &autoload=false 추가 -->
+    <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={KAKAO_JS_KEY}&autoload=false"></script>
 </head>
 <body>
     <div id="map" style="width:100%;height:400px;"></div>
     <script>
-        var container = document.getElementById('map');
-        var options = {{
-            center: new kakao.maps.LatLng(37.566826, 126.9786567),
-            level: 3
-        }};
-        var map = new kakao.maps.Map(container, options);
+        // 3. 카카오 스크립트가 완전히 로드된 후 실행되도록 감싸줍니다.
+        kakao.maps.load(function() {{
+            var container = document.getElementById('map');
+            var options = {{
+                center: new kakao.maps.LatLng(37.566826, 126.9786567),
+                level: 3
+            }};
+            var map = new kakao.maps.Map(container, options);
+        }});
     </script>
 </body>
 </html>
 """
+
 components.html(map_html, height=450)
 
 components.html(map_html, height=420)
