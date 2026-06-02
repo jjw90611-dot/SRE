@@ -84,13 +84,13 @@ if submit_button:
                 3. 가용 예산: {budget}
                 """
                 
-                # API 호출 (llama3-70b 모델 사용)
+                # API 호출 (최신 llama-3.3-70b-versatile 모델 사용)
                 chat_completion = client.chat.completions.create(
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_message}
                     ],
-                    model="llama3-70b-8192",
+                    model="llama-3.3-70b-versatile", # <--- 이 부분이 수정되었습니다.
                     temperature=0.3, 
                     max_tokens=3000
                 )
