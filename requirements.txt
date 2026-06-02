@@ -1,6 +1,2 @@
 streamlit
-requests
-pandas
-plotly
-folium
-streamlit-folium
+groq
